@@ -55,6 +55,8 @@ intents.message_content = False
 
 bot = discord.Client(intents=intents)
 processing_members: set[tuple[int, int]] = set()
+WARNING_TEXT = "DONT TYPE HERE OR YOU WILL GET MUTTED"
+warning_pin_lock = asyncio.Lock()
 
 
 def is_exempt(member: discord.Member) -> bool:
@@ -136,6 +138,52 @@ async def delete_recent_messages(guild: discord.Guild, member_id: int) -> tuple[
     return deleted, scanned, inaccessible
 
 
+async def ensure_trigger_warning_pinned() -> None:
+    """Ensure the warning exists and is pinned without creating duplicates on reconnects."""
+    async with warning_pin_lock:
+        channel = bot.get_channel(TRIGGER_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(TRIGGER_CHANNEL_ID)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                log.error("Could not access trigger channel %s to pin the warning: %s", TRIGGER_CHANNEL_ID, exc)
+                return
+
+        if not isinstance(channel, discord.TextChannel):
+            log.error("TRIGGER_CHANNEL_ID=%s is not a server text channel; cannot pin the warning", TRIGGER_CHANNEL_ID)
+            return
+
+        bot_user = bot.user
+        if bot_user is None:
+            log.warning("Bot user is not available yet; warning was not pinned")
+            return
+
+        try:
+            pinned_messages = await channel.pins()
+            for pinned in pinned_messages:
+                if pinned.author.id == bot_user.id and pinned.content.strip() == WARNING_TEXT:
+                    log.info("Trigger warning is already pinned in #%s", channel.name)
+                    return
+
+            # If a previous run sent the warning but could not pin it, pin that message.
+            async for recent in channel.history(limit=100, oldest_first=False):
+                if recent.author.id == bot_user.id and recent.content.strip() == WARNING_TEXT:
+                    await recent.pin(reason="Keep the anti-scam trigger-channel warning visible")
+                    log.info("Pinned existing trigger warning in #%s", channel.name)
+                    return
+
+            warning = await channel.send(WARNING_TEXT, allowed_mentions=discord.AllowedMentions.none())
+            await warning.pin(reason="Keep the anti-scam trigger-channel warning visible")
+            log.info("Posted and pinned trigger warning in #%s", channel.name)
+        except discord.Forbidden:
+            log.error(
+                "Cannot read history/send/pin in trigger channel %s; grant View Channel, Read Message History, Send Messages, and Manage Messages",
+                TRIGGER_CHANNEL_ID,
+            )
+        except discord.HTTPException as exc:
+            log.error("Discord API error while pinning trigger-channel warning: %s", exc)
+
+
 @bot.event
 async def on_ready() -> None:
     log.info("Logged in as %s (ID %s)", bot.user, bot.user.id if bot.user else "unknown")
@@ -146,6 +194,7 @@ async def on_ready() -> None:
         CLEANUP_LOOKBACK_MINUTES,
         MAX_MESSAGES_PER_CHANNEL,
     )
+    await ensure_trigger_warning_pinned()
 
 
 @bot.event
