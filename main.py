@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import discord
+from aiohttp import web
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -53,7 +54,47 @@ intents.messages = True
 # Message content is intentionally not enabled: the bot only watches a configured channel ID.
 intents.message_content = False
 
-bot = discord.Client(intents=intents)
+async def health_handler(request: web.Request) -> web.Response:
+    client = request.app["discord_client"]
+    ready = client.is_ready()
+    return web.json_response(
+        {"status": "ok" if ready else "starting", "discord_ready": ready},
+        status=200 if ready else 503,
+    )
+
+
+class AntiScamClient(discord.Client):
+    def __init__(self, *, intents: discord.Intents):
+        super().__init__(intents=intents)
+        self.health_runner: web.AppRunner | None = None
+
+    async def setup_hook(self) -> None:
+        await super().setup_hook()
+        try:
+            port = int(os.getenv("PORT", "8080"))
+            if not 1 <= port <= 65535:
+                raise ValueError("PORT must be between 1 and 65535")
+        except ValueError as exc:
+            raise RuntimeError("PORT must be a valid TCP port number") from exc
+
+        app = web.Application()
+        app["discord_client"] = self
+        app.router.add_get("/", health_handler)
+        app.router.add_get("/health", health_handler)
+        self.health_runner = web.AppRunner(app)
+        await self.health_runner.setup()
+        site = web.TCPSite(self.health_runner, host="0.0.0.0", port=port)
+        await site.start()
+        log.info("HTTP health endpoint listening on 0.0.0.0:%s (/health)", port)
+
+    async def close(self) -> None:
+        if self.health_runner is not None:
+            await self.health_runner.cleanup()
+            self.health_runner = None
+        await super().close()
+
+
+bot = AntiScamClient(intents=intents)
 processing_members: set[tuple[int, int]] = set()
 WARNING_TEXT = "DONT TYPE HERE OR YOU WILL GET MUTTED"
 warning_pin_lock = asyncio.Lock()
