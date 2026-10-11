@@ -167,7 +167,7 @@ async def delete_recent_messages(guild: discord.Guild, member_id: int) -> tuple[
                 if old_message.author.id != member_id:
                     continue
                 try:
-                    await old_message.delete(reason="Recent message cleanup after anti-scam trigger")
+                    await old_message.delete()
                     deleted += 1
                 except discord.NotFound:
                     pass  # Already deleted by another moderator or bot.
@@ -200,8 +200,7 @@ async def ensure_trigger_warning_pinned() -> None:
             return
 
         try:
-            pinned_messages = await channel.pins()
-            for pinned in pinned_messages:
+            async for pinned in channel.pins():
                 if pinned.author.id == bot_user.id and pinned.content.strip() == WARNING_TEXT:
                     log.info("Trigger warning is already pinned in #%s", channel.name)
                     return
@@ -260,7 +259,7 @@ async def on_message(message: discord.Message) -> None:
     try:
         trigger_deleted = False
         try:
-            await message.delete(reason="Message posted in the designated anti-scam alert channel")
+            await message.delete()
             trigger_deleted = True
         except discord.NotFound:
             trigger_deleted = True
